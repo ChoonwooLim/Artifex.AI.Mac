@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nvidia-smi:*)",
+      "Bash(python:*)",
+      "Bash(powershell:*)",
+      "Bash(npm start)",
+      "Bash(pip install:*)",
+      "Bash(npm run build:*)",
+      "Bash(git pull:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git checkout:*)",
+      "Bash(cmd /c:*)",
+      "Bash(SET WAN_FORCE_FP16=1)",
+      "Bash(SET WAN_COMPILE=1)",
+      "Bash(npm run dist:*)",
+      "Bash(npm install)",
+      "Bash(build-installer.bat)",
+      "Bash(./build-installer.bat)",
+      "Bash(dir:*)",
+      "Bash(npx electron-builder:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npm install:*)",
+      "Bash(timeout:*)",
+      "Bash(npm run:*)",
+      "Bash(npm cache clean:*)",
+      "Bash(taskkill:*)",
+      "Bash(cross-env VITE_PORT=5174 npm run dev)",
+      "Bash(grep:*)",
+      "Bash(findstr:*)"
+    ],
+    "deny": [],
+    "ask": [],
+    "additionalDirectories": [
+      "D:\\mnt\\d\\XX-v01"
+    ]
+  }
+}
