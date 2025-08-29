@@ -12,7 +12,6 @@ from functools import partial
 
 import numpy as np
 import torch
-import torch.cuda.amp as amp
 import torch.distributed as dist
 import torchvision.transforms.functional as TF
 from decord import VideoReader
@@ -34,6 +33,13 @@ from .utils.fm_solvers import (
     retrieve_timesteps,
 )
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from .utils.device import (
+    get_best_device,
+    get_effective_param_dtype,
+    autocast as dev_autocast,
+    empty_cache_if_needed,
+    synchronize_if_needed,
+)
 
 
 def load_safetensors(path):
@@ -85,14 +91,15 @@ class WanS2V:
                 Convert DiT model parameters dtype to 'config.param_dtype'.
                 Only works without FSDP.
         """
-        self.device = torch.device(f"cuda:{device_id}")
+        self.device = get_best_device(device_id)
         self.config = config
         self.rank = rank
         self.t5_cpu = t5_cpu
         self.init_on_cpu = init_on_cpu
 
         self.num_train_timesteps = config.num_train_timesteps
-        self.param_dtype = config.param_dtype
+        self.param_dtype = get_effective_param_dtype(config.param_dtype, self.device)
+        self.t5_dtype = get_effective_param_dtype(config.t5_dtype, self.device)
 
         if t5_fsdp or dit_fsdp or use_sp:
             self.init_on_cpu = False
@@ -100,7 +107,7 @@ class WanS2V:
         shard_fn = partial(shard_model, device_id=device_id)
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
-            dtype=config.t5_dtype,
+            dtype=self.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=os.path.join(checkpoint_dir, config.t5_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),
@@ -528,7 +535,7 @@ class WanS2V:
         out = []
         # evaluation mode
         with (
-                torch.amp.autocast('cuda', dtype=self.param_dtype),
+                dev_autocast(self.device, self.param_dtype),
                 torch.no_grad(),
         ):
             for r in range(num_repeat):
@@ -606,7 +613,7 @@ class WanS2V:
                     }
                 if offload_model or self.init_on_cpu:
                     self.noise_model.to(self.device)
-                    torch.cuda.empty_cache()
+                    empty_cache_if_needed(self.device)
 
                 for i, t in enumerate(tqdm(timesteps)):
                     latent_model_input = latents[0:1]
@@ -637,8 +644,8 @@ class WanS2V:
 
                 if offload_model:
                     self.noise_model.cpu()
-                    torch.cuda.synchronize()
-                    torch.cuda.empty_cache()
+                    synchronize_if_needed(self.device)
+                    empty_cache_if_needed(self.device)
                 latents = torch.stack(latents)
                 if not (drop_first_motion and r == 0):
                     decode_latents = torch.cat([motion_latents, latents], dim=2)
@@ -666,7 +673,7 @@ class WanS2V:
         del sample_scheduler
         if offload_model:
             gc.collect()
-            torch.cuda.synchronize()
+            synchronize_if_needed(self.device)
         if dist.is_initialized():
             dist.barrier()
 

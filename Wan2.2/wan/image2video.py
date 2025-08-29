@@ -11,7 +11,6 @@ from functools import partial
 
 import numpy as np
 import torch
-import torch.cuda.amp as amp
 import torch.distributed as dist
 import torchvision.transforms.functional as TF
 from tqdm import tqdm
@@ -28,6 +27,12 @@ from .utils.fm_solvers import (
     retrieve_timesteps,
 )
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from .utils.device import (
+    get_best_device,
+    get_effective_param_dtype,
+    autocast as dev_autocast,
+    empty_cache_if_needed,
+)
 
 
 class WanI2V:
@@ -71,7 +76,7 @@ class WanI2V:
                 Convert DiT model parameters dtype to 'config.param_dtype'.
                 Only works without FSDP.
         """
-        self.device = torch.device(f"cuda:{device_id}")
+        self.device = get_best_device(device_id)
         self.config = config
         self.rank = rank
         self.t5_cpu = t5_cpu
@@ -79,7 +84,8 @@ class WanI2V:
 
         self.num_train_timesteps = config.num_train_timesteps
         self.boundary = config.boundary
-        self.param_dtype = config.param_dtype
+        self.param_dtype = get_effective_param_dtype(config.param_dtype, self.device)
+        self.t5_dtype = get_effective_param_dtype(config.t5_dtype, self.device)
 
         if t5_fsdp or dit_fsdp or use_sp:
             self.init_on_cpu = False
@@ -87,7 +93,7 @@ class WanI2V:
         shard_fn = partial(shard_model, device_id=device_id)
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
-            dtype=config.t5_dtype,
+            dtype=self.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=os.path.join(checkpoint_dir, config.t5_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),
@@ -333,7 +339,7 @@ class WanI2V:
 
         # evaluation mode
         with (
-                torch.amp.autocast('cuda', dtype=self.param_dtype),
+                dev_autocast(self.device, self.param_dtype),
                 torch.no_grad(),
                 no_sync_low_noise(),
                 no_sync_high_noise(),
@@ -415,7 +421,7 @@ class WanI2V:
             if offload_model:
                 self.low_noise_model.cpu()
                 self.high_noise_model.cpu()
-                torch.cuda.empty_cache()
+                empty_cache_if_needed(self.device)
 
             if self.rank == 0:
                 videos = self.vae.decode(x0)

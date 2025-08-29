@@ -10,7 +10,6 @@ from contextlib import contextmanager
 from functools import partial
 
 import torch
-import torch.cuda.amp as amp
 import torch.distributed as dist
 from tqdm import tqdm
 
@@ -26,6 +25,13 @@ from .utils.fm_solvers import (
     retrieve_timesteps,
 )
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from .utils.device import (
+    get_best_device,
+    get_effective_param_dtype,
+    autocast as dev_autocast,
+    empty_cache_if_needed,
+    synchronize_if_needed,
+)
 
 
 class WanT2V:
@@ -69,7 +75,8 @@ class WanT2V:
                 Convert DiT model parameters dtype to 'config.param_dtype'.
                 Only works without FSDP.
         """
-        self.device = torch.device(f"cuda:{device_id}")
+        # macOS/MPS/CPU 호환 디바이스 선택
+        self.device = get_best_device(device_id)
         self.config = config
         self.rank = rank
         self.t5_cpu = t5_cpu
@@ -77,7 +84,9 @@ class WanT2V:
 
         self.num_train_timesteps = config.num_train_timesteps
         self.boundary = config.boundary
-        self.param_dtype = config.param_dtype
+        # 장치에 맞는 안전 dtype 선택 (MPS는 fp16, CPU는 fp32 권장)
+        self.param_dtype = get_effective_param_dtype(config.param_dtype, self.device)
+        self.t5_dtype = get_effective_param_dtype(config.t5_dtype, self.device)
 
         if t5_fsdp or dit_fsdp or use_sp:
             self.init_on_cpu = False
@@ -85,7 +94,7 @@ class WanT2V:
         shard_fn = partial(shard_model, device_id=device_id)
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
-            dtype=config.t5_dtype,
+            dtype=self.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=os.path.join(checkpoint_dir, config.t5_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),
@@ -298,7 +307,7 @@ class WanT2V:
 
         # evaluation mode
         with (
-                torch.amp.autocast('cuda', dtype=self.param_dtype),
+                dev_autocast(self.device, self.param_dtype),
                 torch.no_grad(),
                 no_sync_low_noise(),
                 no_sync_high_noise(),
@@ -363,7 +372,7 @@ class WanT2V:
             if offload_model:
                 self.low_noise_model.cpu()
                 self.high_noise_model.cpu()
-                torch.cuda.empty_cache()
+                empty_cache_if_needed(self.device)
             if self.rank == 0:
                 videos = self.vae.decode(x0)
 
@@ -371,7 +380,7 @@ class WanT2V:
         del sample_scheduler
         if offload_model:
             gc.collect()
-            torch.cuda.synchronize()
+            synchronize_if_needed(self.device)
         if dist.is_initialized():
             dist.barrier()
 
